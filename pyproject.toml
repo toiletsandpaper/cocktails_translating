@@ -1,0 +1,33 @@
+[project]
+name = "barometer-chat"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=3.5.1",
+    "duckdb>=1.2.2",
+    "huggingface-hub>=0.30.2",
+    "langfuse>=2.60.3",
+    "openai>=1.77.0",
+    "polars>=1.29.0",
+    "pydantic-settings>=2.9.1",
+    "structlog>=25.3.0",
+    "transformers>=4.51.3",
+]
+
+# install bakcend hatch
+[build-system]
+requires = ["hatchling>=1.13.0"]
+build-backend = "hatchling.build"
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["cocktails_translator"]
+
+[dependency-groups]
+dev = [
+    "marimo>=0.13.4",
+    "rich>=14.0.0",
+    "sqlglot>=26.16.4",
+]
