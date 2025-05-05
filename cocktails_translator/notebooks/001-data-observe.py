@@ -48,18 +48,40 @@ def _(NamedTuple, dataset, mo):
                 'scoop' in amount,
                 'slice' in amount,
                 'drop' in amount,
+                'pint' in amount,
+                'pinch' in amount,
+                'grind' in amount,
         ]) and len(amount.split()) == 2:
             parts = amount.split()
             try:
-                quantity = float(parts[0])
+                if parts[0] == '1⁄2':
+                    quantity = 0.5
+                elif parts[0] == '3⁄4':
+                    quantity = 0.75
+                else: 
+                    quantity = float(parts[0])
                 unit = parts[1]
                 if unit == 'drop':
                     quantity //= 4
                     unit = 'ml'
                 unit = unit.replace('dash', 'ml')
-            
+
             except ValueError as e:
                 pass
+        if 'inch' in amount:
+            if amount.split()[0] == '1⁄2':
+                quantity = 0.5
+            elif amount.split()[0] == '3⁄4':
+                quantity = 0.75
+            elif amount.split()[0] == '1⁄6':
+                quantity = 1 / 6
+            elif amount.split()[0] == '1⁄4':
+                quantity = 0.25
+            else:
+                quantity = float(amount.split()[0])
+            quantity *= 2.5
+            quantity = 0.5 * round(quantity / 0.5)
+            unit = 'cm'
         if amount.startswith('1 1⁄2'):
             quantity = 1.5
             unit = amount.split()[2]
@@ -90,7 +112,7 @@ def _(NamedTuple, dataset, mo):
         ]):
             quantity = None
             unit = amount.replace('with', '').replace('of', '')
-        if 'cube' in amount and 'sugar' in name:
+        if 'cube' in amount and 'sugar' in name.lower():
             quantity = 5
             unit = 'gram'
         if unit is None or name is None:
@@ -98,7 +120,7 @@ def _(NamedTuple, dataset, mo):
             print(f'\t{ingredient_parsed[0].split()}')
             return []
 
-    
+
         if unit == 'cl':
             quantity = float(quantity) * 10
             unit = 'ml'
@@ -134,6 +156,8 @@ def _(NamedTuple, dataset, mo):
 
 @app.cell
 def _(dataset, extract_ingredients):
+    from tqdm.auto import tqdm
+
     all_ingredients = []
     for row in dataset[:]['ingredients']:
         try:
