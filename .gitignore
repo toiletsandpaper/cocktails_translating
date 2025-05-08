@@ -174,4 +174,4 @@ cython_debug/
 .pypirc
 
 # Marimo notebooks
-__marimo__/
+**/__marimo__/
