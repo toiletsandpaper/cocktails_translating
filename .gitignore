@@ -175,3 +175,7 @@ cython_debug/
 
 # Marimo notebooks
 **/__marimo__/
+
+# Project specific
+logs/
+cocktails_translator/notebooks/datasets/

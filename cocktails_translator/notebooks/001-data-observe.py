@@ -7,7 +7,7 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import ast
-    from typing import NamedTuple\
+    from typing import NamedTuple
 
     import duckdb
     import structlog
@@ -18,8 +18,40 @@ def _():
 
     from cocktails_translator.settings import Settings
 
+
     settings = Settings()
-    logger = structlog.get_logger()
+    
+    import logging
+    import structlog
+    from structlog.stdlib import LoggerFactory
+    from structlog.processors import JSONRenderer, TimeStamper, StackInfoRenderer, format_exc_info
+
+    # Configure logging to only capture logs from the 'logger' instance
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("./logs/application.log"),
+        ],
+    )
+
+    # Configure structlog
+    structlog.configure(
+        processors=[
+            TimeStamper(fmt="iso"),
+            StackInfoRenderer(),
+            format_exc_info,
+            JSONRenderer(),
+        ],
+        context_class=dict,
+        logger_factory=LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    logger = structlog.get_logger("translating")
+    logging.getLogger().setLevel(logging.INFO)  # Suppress logs from other loggers
+
     return NamedTuple, ast, logger, mo, pl, print, settings
 
 
@@ -89,7 +121,7 @@ def _(NamedTuple):
 
 @app.cell
 def _(pl):
-    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv')
+    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()
     #dataset['ingridients'] = dataset.select(pl.col('ingredients').cast(pl.List))
     dataset
     return (dataset,)
@@ -234,7 +266,7 @@ def _(Ingredient, dataset, extract_ingredients, logger, print):
 @app.cell
 def _(ingredients, print):
     unique_units = set(ingredient.unit for ingredient in ingredients)
-    print("Unique units:", unique_units)
+    print("Unique quantity:", unique_units)
     return
 
 
@@ -247,39 +279,23 @@ def _(ingredients, print):
 
 
 @app.cell
-def _(Ingredient, ingredients_by_row, print):
-    def format_ingredients(ingredients: list[Ingredient]) -> str:
-        res = "Ingredients:\n"
-        for pos, ing in enumerate(ingredients):
-            res = res + f"\tIngredient {pos+1}:\n"
-            res = res + f"\t\tName: {ing.name}\n"
-            res = res + f"\t\tAmount: {ing.quantity} {ing.unit}\n"
-        return res
-    print(format_ingredients(ingredients_by_row[0]))
+def _(ingredients, print):
+    unique_quantity = set(ingredient.quantity for ingredient in ingredients)
+    print("Unique :", unique_quantity)
     return
 
 
 @app.cell
-def _(settings):
-    from langfuse.openai import openai
-    from langfuse import Langfuse
-
-    langfuse = Langfuse(
-        public_key=settings.LANGFUSE_PUBLIC_KEY,
-        secret_key=settings.LANGFUSE_SECRET_KEY,
-        host=settings.LANGFUSE_HOST,
-    )
-
-    openai.langfuse_public_key = settings.LANGFUSE_PUBLIC_KEY
-    openai.langfuse_secret_key = settings.LANGFUSE_SECRET_KEY
-    openai.langfuse_enabled = True
-    openai.langfuse_host = settings.LANGFUSE_HOST
-
-    openai.api_key = settings.OPENAI_API_KEY
-    openai.base_url = settings.OPENAI_API_BASE
-
-    openai.langfuse_auth_check()
-    return (langfuse,)
+def _(Ingredient, ingredients_by_row, print):
+    def format_ingredients(ingredients: list[Ingredient]) -> str:
+        res = ''
+        for pos, ing in enumerate(ingredients):
+            res = res + f"\t- Ingredient {pos+1}:\n"
+            res = res + f"\t\t- Name: {ing.name}\n"
+            res = res + f"\t\t- Amount: {ing.quantity} {ing.unit}\n"
+        return res.replace('\t', ' ' * 4)
+    print(format_ingredients(ingredients_by_row[0]))
+    return (format_ingredients,)
 
 
 @app.cell
@@ -288,15 +304,15 @@ def _(print):
 
     class TranslatedIngredient(BaseModel):
         name: str = Field(
-            description="Ingredient name translated to Russian. Use the original ingredient name translation (e.g., 'Ананас (свежий)')."
+            description="Ingredient name translated to Russian. Use the original ingredient name translation (for example, 'Ананас (свежий)')."
         )
         amount: str = Field(
-            description="Ingredient amount in Russian using the format 'QUANTITY UNIT' (for example, '3 мл' or '1 шт.'). Convert imperial measurements if needed."
+            description="Ingredient amount in Russian using the format 'QUANTITY UNIT' (e.g., '3 мл' or '1 шт.'). Convert imperial measurements if needed."
         )
 
     class TranslatedRecipe(BaseModel):
-        cocktail_name: str = Field(
-            description="Cocktail name in Russian following the format: 'Transliterated Name (Translated Name)' if a direct translation is possible; if not, provide only the transliterated name."
+        name: str = Field(
+            description="Cocktail name in Russian following the format: 'Transliterated Name (Translated Name)' if a direct translation is available; if not, provide only the transliterated name."
         )
         glass: str = Field(
             description="Type of glass to serve the cocktail in Russian."
@@ -305,128 +321,260 @@ def _(print):
             description="Garnish instructions for the cocktail in Russian."
         )
         recipe: str = Field(
-            description="Detailed cocktail recipe instructions in Russian with all measurements converted to metric (except traditional cooking measurements such as 'pinch' which become 'щепотка')."
+            description="Detailed cocktail recipe instructions in Russian with all measurements converted to metric (except traditional culinary measurements such as 'pinch', which become 'щепотка')."
         )
         ingredients: list[TranslatedIngredient] = Field(
-            description="A list of ingredients in Russian. Each ingredient must include its name and amount in the precise format."
+            description="A list of ingredients in Russian. Each ingredient must include its translated name and amount using the specified format."
         )
 
-    # Sample structure for testing
-    _cocktail = TranslatedRecipe(
-        cocktail_name='Абакаши Риса́су ("Богатый Ананас")',
-        glass="Половинка ананаса (замороженная, в виде чаши)",
-        garnish="Аккуратно вырезать отверстие размером соломинки в верхней части ананасовой чаши и использовать верхнюю часть как крышку.",
-        recipe=(
-            "Срезать верхушку небольшого ананаса и аккуратно вынуть мякоть, оставив стенки толщиной примерно 12 мм. "
-            "Поместить чашу в морозильную камеру для охлаждения. Удалить твердую сердцевину из мякоти ананаса и выбросить; "
-            "крупно нарезать оставшуюся мякоть, добавить остальные ингредиенты и взбить в блендере с порцией колотого льда (примерно 340 мл). "
-            "Перелить коктейль в ананасовую чашу и подавать со соломинками. (Мякоти одного ананаса хватит как минимум на две чаши.)"
-        ),
-        ingredients=[
-            TranslatedIngredient(name="Ананас (свежий)", amount="1 шт."),
-            TranslatedIngredient(name="Ром Havana Club 3 Year Old", amount="90 мл"),
-            TranslatedIngredient(name="Сок лайма (свежевыжатый)", amount="22.5 мл"),
-            TranslatedIngredient(name="Сахарный песок (мелкий, касторный)", amount="15 мл"),
-        ]
-    )
-
-    print(_cocktail)
     print(TranslatedRecipe.model_json_schema())
 
-    return (TranslatedRecipe,)
+    return BaseModel, TranslatedRecipe
 
 
 @app.cell
-def _(TranslatedRecipe, langfuse):
+def _(
+    TranslatedRecipe,
+    format_ingredients,
+    ingredients_by_row,
+    print,
+    settings,
+):
+    from langfuse import Langfuse
+
+    langfuse = Langfuse(
+        public_key=str(settings.LANGFUSE_PUBLIC_KEY),
+        secret_key=str(settings.LANGFUSE_SECRET_KEY),
+        host=str(settings.LANGFUSE_HOST),
+    )
+
     prompt = langfuse.create_prompt(
-        name="ingredient-translator",
-        type="text",
-        prompt="""
-    You are a highly skilled bartender living in Russia with impeccable fluency in both English and Russian (level beyond C2). Your task is to translate an English cocktail recipe into Russian following these precise instructions:
+        name="ingredient-translator-chat",
+        type="chat",
+        prompt=[
+            {
+                "role": "system",
+                "content": """
+    You are a highly skilled bartender living in Russia with impeccable fluency in both English and Russian (beyond C2 level proficiency). Your task is to translate an English cocktail recipe into Russian, adhering strictly to the instructions below.
 
     1. Translation Requirements:
        - Translate all text into Russian.
-       - When possible, translate measurements from imperial to metric. If an imperial measurement is present inside parentheses, either convert it to its metric equivalent or remove it if it is redundant.
-       - The translation must strictly follow the provided example format.
+       - When encountering imperial measurements, convert them to metric units. For measurements provided within parentheses, either convert to metric or remove them if redundant.
+       - Ensure the output strictly follows the provided structure.
 
-    2. Cocktail Name:  
-       - If the cocktail name can be directly translated, output as: 
-           Transliterated Name (Translated Name)
-       - If no direct translation is available, output only the transliterated name (do not add empty parentheses).
+    2. Cocktail Name:
+       - Translate the cocktail name to follow the format: "Transliterated Name (Translated Name)" if a direct translation is available.
+       - If a direct translation is not possible, output only the transliterated name (avoid empty parentheses) in format: "Transliterated Name".
 
-    3. Glass, Garnish, and Recipe:  
-       - Translate the descriptions literally into Russian.
-       - In the recipe text, ensure that all measurements are in metric units (ml, mm, etc.), except for traditional cooking measurements such as "pinch", which may be translated as “щепотка” and similar terms.
+    3. Glass, Garnish, and Recipe:
+       - Translate these elements literally into Russian.
+       - Ensure the recipe text uses metric measurements (ml, mm, etc.), except for traditional culinary terms (like "pinch," which should be translated as "щепотка").
 
-    4. Ingredients:  
-       - Each ingredient must be output with its name and amount in Russian.
-       - The amount should be in the format: “QUANTITY UNIT” (e.g. “3 мл”, “2 шт.”).  
-       - Convert or remove imperially provided measurements appropriately.
+    4. Ingredients:
+       - Provide a list of ingredients, each with its translated name in Russian and the amount formatted as "QUANTITY UNIT" (e.g., "3 мл" or "1 шт."). Convert any imperial measurements as necessary.
 
-    Below is the sample ENGLISH RECIPE and its expected RUSSIAN counterpart as your reference:
+    Below is an UNCHANGED EXAMPLE of the ENGLISH RECIPE and the corresponding expected RUSSIAN output for your reference:
 
-    ENGLISH RECIPE:
+    --------------------------------------------------------------------------------------------------
+    EXAMPLE ENGLISH RECIPE:
     - Cocktail Name: Abacaxi Ricaço
     - Glass: Pineapple shell (frozen) glass
-    - Garnish: Cut a straw sized hole in the top of the pineapple shell & replace it as a lid
+    - Garnish: Cut a straw sized hole in the top of the pineapple shell & replace it as a lid.
     - Recipe: Cut the top off a small pineapple and carefully scoop out the flesh from the base to leave a shell with 12mm (½ inch) thick walls. Place the shell in a freezer to chill. Remove the hard core from the pineapple flesh and discard; roughly chop the remaining flesh, add other ingredients and BLEND with one 12oz scoop of crushed ice. Pour into the pineapple shell and serve with straws. (The flesh of one pineapple blended with the following ingredients will fill at least two shells).
     - Ingredients:
         - Ingredient 1:
-            - Name: Pineapple (fresh)
-            - Amount: 1 whole
+             - Name: Pineapple (fresh)
+             - Amount: 1 whole
         - Ingredient 2:
-            - Name: Havana Club 3 Year Old rum
-            - Amount: 90 ml
+             - Name: Havana Club 3 Year Old rum
+             - Amount: 90 ml
         - Ingredient 3:
-            - Name: Lime juice (freshly squeezed)
-            - Amount: 22.5 ml
+             - Name: Lime juice (freshly squeezed)
+             - Amount: 22.5 ml
         - Ingredient 4:
-            - Name: White caster sugar
-            - Amount: 15 ml
+             - Name: White caster sugar
+             - Amount: 15 ml
 
-    RUSSIAN RECIPE:
+    EXAMPLE RUSSIAN RECIPE (Expected Output):
     - Cocktail Name: Абакаши Риса́су ("Богатый Ананас")
     - Glass: Половинка ананаса (замороженная, в виде чаши)
     - Garnish: Аккуратно вырезать отверстие размером соломинки в верхней части ананасовой чаши и использовать верхнюю часть как крышку.
     - Recipe: Срезать верхушку небольшого ананаса и аккуратно вынуть мякоть, оставив стенки толщиной примерно 12 мм. Поместить чашу в морозильную камеру для охлаждения. Удалить твердую сердцевину из мякоти ананаса и выбросить; крупно нарезать оставшуюся мякоть, добавить остальные ингредиенты и взбить в блендере с порцией колотого льда (примерно 340 мл). Перелить коктейль в ананасовую чашу и подавать со соломинками. (Мякоти одного ананаса хватит как минимум на две чаши.)
     - Ingredients:
         - Ingredient 1:
-            - Name: Ананас (свежий)
-            - Amount: 1 шт.
+             - Name: Ананас (свежий)
+             - Amount: 1 шт.
         - Ingredient 2:
-            - Name: Ром Havana Club 3 Year Old
-            - Amount: 90 мл
+             - Name: Ром Havana Club 3 Year Old
+             - Amount: 90 мл
         - Ingredient 3:
-            - Name: Сок лайма (свежевыжатый)
-            - Amount: 22.5 мл
+             - Name: Сок лайма (свежевыжатый)
+             - Amount: 22.5 мл
         - Ingredient 4:
-            - Name: Сахарный песок (мелкий, касторный)
-            - Amount: 15 мл
+             - Name: Сахарный песок (мелкий, касторный)
+             - Amount: 15 мл
+    --------------------------------------------------------------------------------------------------
 
-    Use the exact structure as shown in the example. Ensure that the output strictly conforms to the fields specified in the JSON schema provided (translated cocktail name, glass, garnish, recipe, and a list of ingredients with each ingredient's name and amount).
+    Please ensure your output exactly matches the JSON schema provided in the backend configuration, with the fields and structure for cocktail name, glass, garnish, recipe, and ingredients as specified. Do not include any additional explanation or formatting outside the expected structure.
+                """
+            },
+            {
+                "role": "user",
+                "content": """
+    YOU SHOULD TRANSTALE THIS ENGLISH RECIPE:
+    - Cocktail Name: {{name}}
+    - Glass: {{glass}}
+    - Garnish: {{garnish}}
+    - Recipe: {{recipe}}
+    - Ingredients:
+    {{ingredients}}
 
-    Output must be valid according to the output model.
-
-    """,
+    TO RUSSIAN LANGUAGE ACCORDING TO YOUR SYSTEM PROMPT IN A JSON SCHEMA.
+                """
+            },
+        ],
         labels=["production"],
         config={
             "supported_languages": ["en", "ru"],
             "output_model": TranslatedRecipe.model_json_schema(),
-        },
+        }
     )
 
+    print(prompt.compile(
+        name='NAME',
+        glass="GLASS",
+        garnish="GARNISH",
+        recipe="RECIPE",
+        ingredients=format_ingredients(ingredients_by_row[0]),
+    ))
+
+    return (prompt,)
+
+
+@app.cell
+def _(BaseModel, dataset, format_ingredients, ingredients_by_row, print):
+    class OriginalRecipe(BaseModel):
+        name: str
+        glass: str
+        garnish: str
+        recipe: str
+        ingredients: str
+
+
+    mapped_rows: list[OriginalRecipe] = []
+    for i, _row in enumerate(dataset.iter_rows()):
+        try:
+            _recipe = OriginalRecipe(
+                name=_row[0],
+                glass=_row[1],
+                garnish=_row[2],
+                recipe=_row[3],
+                ingredients=format_ingredients(
+                    ingredients_by_row[i]
+                ),
+            )
+            mapped_rows.append(_recipe)
+        except Exception as e:
+            print(_row)
+            raise Exception(e)
+    print(mapped_rows[:2])
+    return OriginalRecipe, mapped_rows
+
+
+@app.cell
+def _(
+    OriginalRecipe,
+    TranslatedRecipe,
+    logger,
+    mapped_rows,
+    mo,
+    pl,
+    prompt,
+    settings,
+):
+    from pydantic import ValidationError
+    from langfuse.model import ChatPromptClient
+    from langfuse.decorators import observe
+    from langfuse.openai import openai
+    #from openai import OpenAI
+
+    openai.langfuse_public_key = str(settings.LANGFUSE_PUBLIC_KEY)
+    openai.langfuse_secret_key = str(settings.LANGFUSE_SECRET_KEY)
+    openai.langfuse_host = str(settings.LANGFUSE_HOST)
+
+    openai.api_key = str(settings.OPENAI_API_KEY)
+    openai.base_url = str(settings.OPENAI_API_BASE)
+
+    if not openai.langfuse_auth_check():
+        raise Exception('Something wrong with langfuse connection.')
+
+    @observe(as_type="generation")
+    def translate_recipe(prompt_client: ChatPromptClient, original_recipe: OriginalRecipe) -> TranslatedRecipe | None:
+        """
+        Uses the provided Langfuse prompt_client (TextPromptClient) and an OriginalRecipe instance to generate
+        a translated recipe in Russian. Uses langfuse openai client for text completion with structured output
+        enforcing the TranslatedRecipe schema. Retries up to 5 times if the structured output fails to parse.
+
+        Parameters:
+            prompt_client: A Langfuse TextPromptClient to use for processing the prompt.
+            original_recipe: An instance of OriginalRecipe containing the cocktail recipe to translate.
+
+        Returns:
+            An instance of TranslatedRecipe on success, otherwise None if the translation fails after 5 tries.
+        """
+        client = openai.OpenAI(
+            api_key=settings.OPENAI_API_KEY,
+            base_url=str(settings.OPENAI_API_BASE),
+        )
+        max_retries = 2
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                compiled_prompt = prompt_client.compile(
+                    name=original_recipe.name,
+                    glass=original_recipe.glass,
+                    garnish=original_recipe.garnish,
+                    recipe=original_recipe.recipe,
+                    ingredients=original_recipe.ingredients,
+                )
+                response = client.beta.chat.completions.parse(
+                    model=settings.TRANSLATOR_MODEL_NAME,
+                    messages=compiled_prompt,
+                    response_format=TranslatedRecipe,
+                )
+                translated_recipe =TranslatedRecipe.model_validate_json(response.choices[0].message.content)
+                return translated_recipe
+
+            except (ValidationError, Exception) as e:
+                attempt += 1
+                logger.warning(f"Attempt {attempt} failed with error: {e}.")
+        logger.error(
+            f"Translation failed for recipe '{original_recipe.name}' after {max_retries} attempts. Skipping the recipe."
+        )
+        return None
+
+    @observe()
+    def run_translation_loop():
+        translated_recipes = []
+        for original_recipe in mo.status.progress_bar(mapped_rows, title="Translating recipes"):
+            logger.info(f"Translating recipe: {original_recipe.name}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
+            translated_recipe = translate_recipe(prompt, original_recipe)
+            if translated_recipe:
+                translated_recipes.append(translated_recipe)
+
+            if len(translated_recipes) % 20 == 0:
+                logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
+                pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
+
+    run_translation_loop()
+
     return
 
 
 @app.cell
-def _(ast):
-    ast.literal_eval("[['1 whole', 'Pineapple (fresh)'], ['9 cl', 'Havana Club 3 Year Old rum'], ['2.25 cl', 'Lime juice (freshly squeezed)'], ['1.5 cl', 'White caster sugar']]")
-    return
+def _(pl):
+    pl.read_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
 
-
-@app.cell
-def _(print, settings):
-    print(settings)
     return
 
 
