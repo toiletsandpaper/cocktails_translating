@@ -20,7 +20,7 @@ def _():
 
 
     settings = Settings()
-    
+
     import logging
     import structlog
     from structlog.stdlib import LoggerFactory
@@ -482,12 +482,11 @@ def _(BaseModel, dataset, format_ingredients, ingredients_by_row, print):
 
 
 @app.cell
-def _(
+async def _(
     OriginalRecipe,
     TranslatedRecipe,
     logger,
     mapped_rows,
-    mo,
     pl,
     prompt,
     settings,
@@ -496,7 +495,7 @@ def _(
     from langfuse.model import ChatPromptClient
     from langfuse.decorators import observe
     from langfuse.openai import openai
-    #from openai import OpenAI
+    import asyncio
 
     openai.langfuse_public_key = str(settings.LANGFUSE_PUBLIC_KEY)
     openai.langfuse_secret_key = str(settings.LANGFUSE_SECRET_KEY)
@@ -509,11 +508,14 @@ def _(
         raise Exception('Something wrong with langfuse connection.')
 
     @observe(as_type="generation")
-    def translate_recipe(prompt_client: ChatPromptClient, original_recipe: OriginalRecipe) -> TranslatedRecipe | None:
+    async def translate_recipe_async(prompt_client: ChatPromptClient, original_recipe: OriginalRecipe) -> TranslatedRecipe | None:
         """
         Uses the provided Langfuse prompt_client (TextPromptClient) and an OriginalRecipe instance to generate
         a translated recipe in Russian. Uses langfuse openai client for text completion with structured output
         enforcing the TranslatedRecipe schema. Retries up to 5 times if the structured output fails to parse.
+
+        This is an async version of the `translate_recipe` function. It uses `await` to handle asynchronous
+        operations, such as making API calls to the Langfuse OpenAI client.
 
         Parameters:
             prompt_client: A Langfuse TextPromptClient to use for processing the prompt.
@@ -522,7 +524,7 @@ def _(
         Returns:
             An instance of TranslatedRecipe on success, otherwise None if the translation fails after 5 tries.
         """
-        client = openai.OpenAI(
+        client = openai.AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
             base_url=str(settings.OPENAI_API_BASE),
         )
@@ -537,12 +539,12 @@ def _(
                     recipe=original_recipe.recipe,
                     ingredients=original_recipe.ingredients,
                 )
-                response = client.beta.chat.completions.parse(
+                response = await client.beta.chat.completions.parse(
                     model=settings.TRANSLATOR_MODEL_NAME,
                     messages=compiled_prompt,
                     response_format=TranslatedRecipe,
                 )
-                translated_recipe =TranslatedRecipe.model_validate_json(response.choices[0].message.content)
+                translated_recipe = TranslatedRecipe.model_validate_json(response.choices[0].message.content)
                 return translated_recipe
 
             except (ValidationError, Exception) as e:
@@ -553,21 +555,45 @@ def _(
         )
         return None
 
+    async def translate_recipes_in_batch(prompt_client: ChatPromptClient, recipes_batch: list[OriginalRecipe]) -> list[TranslatedRecipe | None]:
+        """
+        Translates a batch of recipes asynchronously.
+
+        Parameters:
+            prompt_client: A Langfuse TextPromptClient to use for processing the prompts.
+            recipes_batch: A list of OriginalRecipe instances to translate.
+
+        Returns:
+            A list of TranslatedRecipe instances or None for failed translations.
+        """
+        tasks = [translate_recipe_async(prompt_client, recipe) for recipe in recipes_batch]
+        return await asyncio.gather(*tasks)
+
     @observe()
-    def run_translation_loop():
+    async def run_translation_loop_async():
+        """
+        Iterates over a list of recipes and translates them in batches asynchronously using the `translate_recipes_in_batch` function.
+        Maintains the order of recipes during processing and periodically saves the translated recipes to a dataset.
+
+        The function also logs progress and saves the dataset after every 20 successfully translated recipes.
+
+        Returns:
+            None
+        """
+        batch_size = 10
         translated_recipes = []
-        for original_recipe in mo.status.progress_bar(mapped_rows, title="Translating recipes"):
-            logger.info(f"Translating recipe: {original_recipe.name}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
-            translated_recipe = translate_recipe(prompt, original_recipe)
-            if translated_recipe:
-                translated_recipes.append(translated_recipe)
 
-            if len(translated_recipes) % 20 == 0:
-                logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
-                pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
+        for i in range(0, len(mapped_rows), batch_size):
+            batch = mapped_rows[i:i + batch_size]
+            logger.info(f"Processing batch {i // batch_size + 1}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
+            results = await translate_recipes_in_batch(prompt, batch)
+            translated_recipes.extend(filter(None, results))
 
-    run_translation_loop()
+            logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
+            pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
 
+
+    await run_translation_loop_async()
     return
 
 
