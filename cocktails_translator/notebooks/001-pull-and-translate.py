@@ -348,7 +348,7 @@ def _(
         host=str(settings.LANGFUSE_HOST),
     )
 
-    prompt = langfuse.create_prompt(
+    prompt_client = langfuse.create_prompt(
         name="ingredient-translator-chat",
         type="chat",
         prompt=[
@@ -528,7 +528,7 @@ async def _(
             api_key=settings.OPENAI_API_KEY,
             base_url=str(settings.OPENAI_API_BASE),
         )
-        max_retries = 2
+        max_retries = 5
         attempt = 0
         while attempt < max_retries:
             try:
@@ -586,7 +586,7 @@ async def _(
         for i in range(0, len(mapped_rows), batch_size):
             batch = mapped_rows[i:i + batch_size]
             logger.info(f"Processing batch {i // batch_size + 1}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
-            results = await translate_recipes_in_batch(prompt, batch)
+            results: list[TranslatedRecipe | None] = await translate_recipes_in_batch(prompt_client, batch)
             translated_recipes.extend(filter(None, results))
 
             logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
