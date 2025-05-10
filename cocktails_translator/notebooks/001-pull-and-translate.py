@@ -5,28 +5,25 @@ app = marimo.App(width="medium")
 
 
 @app.cell
-def _():
+def _(logs_path):
     import ast
     from typing import NamedTuple
+    from pathlib import Path
+    import logging
 
-    import duckdb
+    from structlog.stdlib import LoggerFactory
+    from structlog.processors import JSONRenderer, TimeStamper, StackInfoRenderer, format_exc_info
     import structlog
     import polars as pl
     import marimo as mo
-    import huggingface_hub
     from rich import print
 
     from cocktails_translator.settings import Settings
 
 
     settings = Settings()
-    
-    import logging
-    import structlog
-    from structlog.stdlib import LoggerFactory
-    from structlog.processors import JSONRenderer, TimeStamper, StackInfoRenderer, format_exc_info
 
-    # Configure logging to only capture logs from the 'logger' instance
+
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(message)s",
@@ -36,21 +33,19 @@ def _():
         ],
     )
 
-    # Configure structlog
     structlog.configure(
-        processors=[
-            TimeStamper(fmt="iso"),
-            StackInfoRenderer(),
-            format_exc_info,
-            JSONRenderer(),
-        ],
-        context_class=dict,
         logger_factory=LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
     logger = structlog.get_logger("translating")
-    logging.getLogger().setLevel(logging.INFO)  # Suppress logs from other loggers
+    logging.getLogger().setLevel(logging.INFO)
+
+    logs_folder = Path('./logs')
+    logs_path.mkdir(exist_ok=True)
+    dataset_folder = Path('cocktails_translator/notebooks/datasets')
+    dataset_folder.mkdir(exist_ok=True)
+
 
     return NamedTuple, ast, logger, mo, pl, print, settings
 
@@ -121,7 +116,7 @@ def _(NamedTuple):
 
 @app.cell
 def _(pl):
-    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()
+    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()[4100:]
     #dataset['ingridients'] = dataset.select(pl.col('ingredients').cast(pl.List))
     dataset
     return (dataset,)
@@ -166,17 +161,17 @@ def _(
             logger.exception(f"UNHANDLED empty quantity: {ingredient_parsed}")
             return Ingredient(None, "whole", name_token)
 
-        # Process tokens to determine quantity and unit.
+        # process tokens to determine quantity and unit
         while token_index < num_tokens:
             token: str = tokens[token_index].lower()
             if token in UNICODE_FRACTIONS or token.replace('.', '', 1).isdigit() or '/' in token:
-                # Token is a number or fraction.
+                # token is a number or fraction
                 if quantity is None:
                     quantity = parse_fraction(token)
                 else:
                     quantity += parse_fraction(token)
             elif token in KNOWN_UNITS:
-                # Token is a known unit.
+                # token is a known unit
                 target_unit, factor = KNOWN_UNITS[token]
                 if quantity is not None:
                     quantity *= factor
@@ -184,28 +179,25 @@ def _(
                     quantity = 0.5 * round(quantity / 0.5)
                 unit = target_unit
             elif token in KNOWN_MODIFIERS:
-                # Token is a known modifier.
+                # token is a known modifier
                 modifier = token.capitalize()
                 unit = "whole"
             else:
-                # Token is unhandled; assume it's part of the unit or descriptor.
+                # token is unhandled; assume it's part of the unit or descriptor
                 if unit is None:
                     unit = token
                 else:
                     unit += f" {token}"
             token_index += 1
 
-        # Default unit if none was determined.
         if unit is None:
             unit = "whole"
 
-        # Prepend modifier to name if modifier isn't already present.
         if modifier.lower() not in name_token.lower():
             final_name: str = f"{modifier} {name_token}"
         else:
             final_name = name_token
 
-        # Final rounding for quantity.
         if quantity is not None:
             if float(quantity).is_integer():
                 quantity = int(quantity)
@@ -348,7 +340,7 @@ def _(
         host=str(settings.LANGFUSE_HOST),
     )
 
-    prompt = langfuse.create_prompt(
+    prompt_client = langfuse.create_prompt(
         name="ingredient-translator-chat",
         type="chat",
         prompt=[
@@ -440,7 +432,7 @@ def _(
         }
     )
 
-    print(prompt.compile(
+    print(prompt_client.compile(
         name='NAME',
         glass="GLASS",
         garnish="GARNISH",
@@ -448,7 +440,7 @@ def _(
         ingredients=format_ingredients(ingredients_by_row[0]),
     ))
 
-    return (prompt,)
+    return (prompt_client,)
 
 
 @app.cell
@@ -482,38 +474,40 @@ def _(BaseModel, dataset, format_ingredients, ingredients_by_row, print):
 
 
 @app.cell
-def _(
+async def _(
     OriginalRecipe,
     TranslatedRecipe,
     logger,
     mapped_rows,
-    mo,
     pl,
-    prompt,
+    prompt_client,
     settings,
 ):
     from pydantic import ValidationError
     from langfuse.model import ChatPromptClient
     from langfuse.decorators import observe
     from langfuse.openai import openai
-    #from openai import OpenAI
+    import asyncio
 
     openai.langfuse_public_key = str(settings.LANGFUSE_PUBLIC_KEY)
     openai.langfuse_secret_key = str(settings.LANGFUSE_SECRET_KEY)
     openai.langfuse_host = str(settings.LANGFUSE_HOST)
 
     openai.api_key = str(settings.OPENAI_API_KEY)
-    openai.base_url = str(settings.OPENAI_API_BASE)
+    openai.base_url = str(settings.OPENAI_BASE_URL)
 
     if not openai.langfuse_auth_check():
         raise Exception('Something wrong with langfuse connection.')
 
     @observe(as_type="generation")
-    def translate_recipe(prompt_client: ChatPromptClient, original_recipe: OriginalRecipe) -> TranslatedRecipe | None:
+    async def translate_recipe_async(prompt_client: ChatPromptClient, original_recipe: OriginalRecipe) -> TranslatedRecipe | None:
         """
         Uses the provided Langfuse prompt_client (TextPromptClient) and an OriginalRecipe instance to generate
         a translated recipe in Russian. Uses langfuse openai client for text completion with structured output
         enforcing the TranslatedRecipe schema. Retries up to 5 times if the structured output fails to parse.
+
+        This is an async version of the `translate_recipe` function. It uses `await` to handle asynchronous
+        operations, such as making API calls to the Langfuse OpenAI client.
 
         Parameters:
             prompt_client: A Langfuse TextPromptClient to use for processing the prompt.
@@ -522,11 +516,11 @@ def _(
         Returns:
             An instance of TranslatedRecipe on success, otherwise None if the translation fails after 5 tries.
         """
-        client = openai.OpenAI(
+        client = openai.AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
-            base_url=str(settings.OPENAI_API_BASE),
+            base_url=str(settings.OPENAI_BASE_URL),
         )
-        max_retries = 2
+        max_retries = 5
         attempt = 0
         while attempt < max_retries:
             try:
@@ -537,12 +531,12 @@ def _(
                     recipe=original_recipe.recipe,
                     ingredients=original_recipe.ingredients,
                 )
-                response = client.beta.chat.completions.parse(
+                response = await client.beta.chat.completions.parse(
                     model=settings.TRANSLATOR_MODEL_NAME,
                     messages=compiled_prompt,
                     response_format=TranslatedRecipe,
                 )
-                translated_recipe =TranslatedRecipe.model_validate_json(response.choices[0].message.content)
+                translated_recipe = TranslatedRecipe.model_validate_json(response.choices[0].message.content)
                 return translated_recipe
 
             except (ValidationError, Exception) as e:
@@ -553,21 +547,46 @@ def _(
         )
         return None
 
+    async def translate_recipes_in_batch(prompt_client: ChatPromptClient, recipes_batch: list[OriginalRecipe]) -> list[TranslatedRecipe | None]:
+        """
+        Translates a batch of recipes asynchronously.
+
+        Parameters:
+            prompt_client: A Langfuse TextPromptClient to use for processing the prompts.
+            recipes_batch: A list of OriginalRecipe instances to translate.
+
+        Returns:
+            A list of TranslatedRecipe instances or None for failed translations.
+        """
+        tasks = [translate_recipe_async(prompt_client, recipe) for recipe in recipes_batch]
+        return await asyncio.gather(*tasks)
+
     @observe()
-    def run_translation_loop():
+    async def run_translation_loop_async():
+        """
+        Iterates over a list of recipes and translates them in batches asynchronously using the `translate_recipes_in_batch` function.
+        Maintains the order of recipes during processing and periodically saves the translated recipes to a dataset.
+
+        The function also logs progress and saves the dataset after every 20 successfully translated recipes.
+
+        Returns:
+            None
+        """
+        batch_size = 10
         translated_recipes = []
-        for original_recipe in mo.status.progress_bar(mapped_rows, title="Translating recipes"):
-            logger.info(f"Translating recipe: {original_recipe.name}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
-            translated_recipe = translate_recipe(prompt, original_recipe)
-            if translated_recipe:
-                translated_recipes.append(translated_recipe)
 
-            if len(translated_recipes) % 20 == 0:
-                logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
-                pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
+        for i in range(0, len(mapped_rows), batch_size):
+            batch = mapped_rows[i:i + batch_size]
+            logger.info(f"Processing batch {i // batch_size + 1}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
+            results: list[TranslatedRecipe | None] = await translate_recipes_in_batch(prompt_client, batch)
+            translated_recipes.extend(filter(None, results))
+            logger.info(f"1'st item of completed batch: {results[0]}")
 
-    run_translation_loop()
+            logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
+            pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
 
+
+    await run_translation_loop_async()
     return
 
 
