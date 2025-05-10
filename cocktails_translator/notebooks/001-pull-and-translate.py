@@ -116,7 +116,7 @@ def _(NamedTuple):
 
 @app.cell
 def _(pl):
-    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()[4100:]
+    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()
     #dataset['ingridients'] = dataset.select(pl.col('ingredients').cast(pl.List))
     dataset
     return (dataset,)
