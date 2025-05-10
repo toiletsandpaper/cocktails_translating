@@ -5,15 +5,17 @@ app = marimo.App(width="medium")
 
 
 @app.cell
-def _():
+def _(logs_path):
     import ast
     from typing import NamedTuple
+    from pathlib import Path
+    import logging
 
-    import duckdb
+    from structlog.stdlib import LoggerFactory
+    from structlog.processors import JSONRenderer, TimeStamper, StackInfoRenderer, format_exc_info
     import structlog
     import polars as pl
     import marimo as mo
-    import huggingface_hub
     from rich import print
 
     from cocktails_translator.settings import Settings
@@ -21,12 +23,7 @@ def _():
 
     settings = Settings()
 
-    import logging
-    import structlog
-    from structlog.stdlib import LoggerFactory
-    from structlog.processors import JSONRenderer, TimeStamper, StackInfoRenderer, format_exc_info
 
-    # Configure logging to only capture logs from the 'logger' instance
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(message)s",
@@ -36,21 +33,19 @@ def _():
         ],
     )
 
-    # Configure structlog
     structlog.configure(
-        processors=[
-            TimeStamper(fmt="iso"),
-            StackInfoRenderer(),
-            format_exc_info,
-            JSONRenderer(),
-        ],
-        context_class=dict,
         logger_factory=LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
     logger = structlog.get_logger("translating")
-    logging.getLogger().setLevel(logging.INFO)  # Suppress logs from other loggers
+    logging.getLogger().setLevel(logging.INFO)
+
+    logs_folder = Path('./logs')
+    logs_path.mkdir(exist_ok=True)
+    dataset_folder = Path('cocktails_translator/notebooks/datasets')
+    dataset_folder.mkdir(exist_ok=True)
+
 
     return NamedTuple, ast, logger, mo, pl, print, settings
 
@@ -121,7 +116,7 @@ def _(NamedTuple):
 
 @app.cell
 def _(pl):
-    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()
+    dataset = pl.read_csv('hf://datasets/erwanlc/cocktails_recipe/train.csv').drop_nulls()[4100:]
     #dataset['ingridients'] = dataset.select(pl.col('ingredients').cast(pl.List))
     dataset
     return (dataset,)
@@ -166,17 +161,17 @@ def _(
             logger.exception(f"UNHANDLED empty quantity: {ingredient_parsed}")
             return Ingredient(None, "whole", name_token)
 
-        # Process tokens to determine quantity and unit.
+        # process tokens to determine quantity and unit
         while token_index < num_tokens:
             token: str = tokens[token_index].lower()
             if token in UNICODE_FRACTIONS or token.replace('.', '', 1).isdigit() or '/' in token:
-                # Token is a number or fraction.
+                # token is a number or fraction
                 if quantity is None:
                     quantity = parse_fraction(token)
                 else:
                     quantity += parse_fraction(token)
             elif token in KNOWN_UNITS:
-                # Token is a known unit.
+                # token is a known unit
                 target_unit, factor = KNOWN_UNITS[token]
                 if quantity is not None:
                     quantity *= factor
@@ -184,28 +179,25 @@ def _(
                     quantity = 0.5 * round(quantity / 0.5)
                 unit = target_unit
             elif token in KNOWN_MODIFIERS:
-                # Token is a known modifier.
+                # token is a known modifier
                 modifier = token.capitalize()
                 unit = "whole"
             else:
-                # Token is unhandled; assume it's part of the unit or descriptor.
+                # token is unhandled; assume it's part of the unit or descriptor
                 if unit is None:
                     unit = token
                 else:
                     unit += f" {token}"
             token_index += 1
 
-        # Default unit if none was determined.
         if unit is None:
             unit = "whole"
 
-        # Prepend modifier to name if modifier isn't already present.
         if modifier.lower() not in name_token.lower():
             final_name: str = f"{modifier} {name_token}"
         else:
             final_name = name_token
 
-        # Final rounding for quantity.
         if quantity is not None:
             if float(quantity).is_integer():
                 quantity = int(quantity)
@@ -440,7 +432,7 @@ def _(
         }
     )
 
-    print(prompt.compile(
+    print(prompt_client.compile(
         name='NAME',
         glass="GLASS",
         garnish="GARNISH",
@@ -448,7 +440,7 @@ def _(
         ingredients=format_ingredients(ingredients_by_row[0]),
     ))
 
-    return (prompt,)
+    return (prompt_client,)
 
 
 @app.cell
@@ -488,7 +480,7 @@ async def _(
     logger,
     mapped_rows,
     pl,
-    prompt,
+    prompt_client,
     settings,
 ):
     from pydantic import ValidationError
@@ -502,7 +494,7 @@ async def _(
     openai.langfuse_host = str(settings.LANGFUSE_HOST)
 
     openai.api_key = str(settings.OPENAI_API_KEY)
-    openai.base_url = str(settings.OPENAI_API_BASE)
+    openai.base_url = str(settings.OPENAI_BASE_URL)
 
     if not openai.langfuse_auth_check():
         raise Exception('Something wrong with langfuse connection.')
@@ -526,7 +518,7 @@ async def _(
         """
         client = openai.AsyncOpenAI(
             api_key=settings.OPENAI_API_KEY,
-            base_url=str(settings.OPENAI_API_BASE),
+            base_url=str(settings.OPENAI_BASE_URL),
         )
         max_retries = 5
         attempt = 0
@@ -588,6 +580,7 @@ async def _(
             logger.info(f"Processing batch {i // batch_size + 1}. Progress: {len(translated_recipes)}/{len(mapped_rows)}")
             results: list[TranslatedRecipe | None] = await translate_recipes_in_batch(prompt_client, batch)
             translated_recipes.extend(filter(None, results))
+            logger.info(f"1'st item of completed batch: {results[0]}")
 
             logger.info(f"Saving current state of dataset with rows count: {len(translated_recipes)}")
             pl.DataFrame(translated_recipes).write_parquet(f'cocktails_translator/notebooks/datasets/translated_dataset.parquet')
