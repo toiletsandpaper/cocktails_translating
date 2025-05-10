@@ -14,6 +14,7 @@ This project translates the [erwanlc/cocktails_recipe](https://huggingface.co/da
 - **Format**: Parquet
 - **DOI**: [10.57967/hf/5395](https://doi.org/10.57967/hf/5395)
 - **License**: MIT
+- **Xet-Enabled**: This dataset is Xet-enabled on Hugging Face, allowing efficient version control and collaboration.
 
 ### Small Dataset: [toiletsandpaper/cocktails_recipe_ru_small](https://huggingface.co/datasets/toiletsandpaper/cocktails_recipe_ru_small)
 
@@ -25,6 +26,7 @@ This project translates the [erwanlc/cocktails_recipe](https://huggingface.co/da
 - **Format**: Parquet
 - **DOI**: [10.57967/hf/5375](https://doi.org/10.57967/hf/5375)
 - **License**: MIT
+- **Xet-Enabled**: This dataset is Xet-enabled on Hugging Face, allowing efficient version control and collaboration.
 
 ## Citation
 
