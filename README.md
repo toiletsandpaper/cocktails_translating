@@ -33,11 +33,13 @@ This project translates the [erwanlc/cocktails_recipe](https://huggingface.co/da
 If you use this project, please cite it as follows:
 
 ```yaml
-@misc{lubenets_ilya_2025,
-  author       = {Lubenets Ilya and Gunko Maxim},
-  title        = {cocktails_recipe_ru (Revision e078a90)},
-  year         = 2025,
-  url          = {https://huggingface.co/datasets/toiletsandpaper/cocktails_recipe_ru},
-  doi          = {10.57967/hf/5395},
-  publisher    = {Hugging Face}
+@software{Lubenets_Translating_Cocktails_to_2025,
+  author = {Lubenets, Ilya and Gunko, Maxim},
+  doi = {10.5281/zenodo.15367996},
+  license = {MIT},
+  month = may,
+  title = {{Translating Cocktails to Russian using LLMs}},
+  url = {https://github.com/toiletsandpaper/cocktails_translating},
+  version = {1.0.0},
+  year = {2025}
 }
